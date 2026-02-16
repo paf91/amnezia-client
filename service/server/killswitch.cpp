@@ -252,6 +252,7 @@ bool KillSwitch::enablePeerTraffic(const QJsonObject &configStr) {
         }
         config.m_vpnDisabledApps.append(i.toString());
     }
+    config.m_appSplitTunnelType = configStr.value("appSplitTunnelType").toInt(0);
 
     for (auto dns : configStr.value(amnezia::config_key::allowedDnsServers).toArray()) {
         if (!dns.isString()) {

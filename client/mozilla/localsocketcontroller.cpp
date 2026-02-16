@@ -238,6 +238,7 @@ void LocalSocketController::activate(const QJsonObject &rawConfig) {
   json.insert("excludedAddresses", jsExcludedAddresses);
 
   json.insert("vpnDisabledApps", splitTunnelApps);
+  json.insert("appSplitTunnelType", appSplitTunnelType);
 
   json.insert("allowedDnsServers", allowedDns);
 

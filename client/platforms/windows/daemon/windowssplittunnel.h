@@ -48,6 +48,11 @@ class WindowsSplitTunnel final {
   // Excludes an Application from the VPN
   bool excludeApps(const QStringList& appPaths);
 
+  // Sets the split tunnel mode:
+  // 0 = EXCLUDE (listed apps bypass VPN, default)
+  // 1 = INCLUDE (listed apps use VPN, everything else bypasses)
+  bool setSplitTunnelMode(uint32_t mode);
+
   // Fetches and Pushed needed info to move to engaged mode
   bool start(int inetAdapterIndex, int vpnAdapterIndex = 0);
   // Deletes Rules and puts the driver into passive mode

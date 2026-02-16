@@ -28,6 +28,14 @@
 
 namespace {
 Logger logger("WindowsDaemon");
+
+// Split tunnel driver modes (match ST_SPLIT_TUNNEL_MODE in driver)
+constexpr uint32_t kDriverModeExclude = 0;  // listed apps bypass VPN
+constexpr uint32_t kDriverModeInclude = 1;  // listed apps use VPN, rest bypasses
+
+// App split tunnel types from Settings::AppsRouteMode
+constexpr int kAppRouteOnlyForward = 1;  // VpnOnlyForwardApps
+constexpr int kAppRouteAllExcept = 2;    // VpnAllExceptApps
 }
 
 WindowsDaemon::WindowsDaemon() : Daemon(nullptr) {
@@ -65,9 +73,27 @@ void WindowsDaemon::activateSplitTunnel(const InterfaceConfig& config, int vpnAd
     if (m_splitTunnelManager == nullptr)
         return;
 
-  if (config.m_vpnDisabledApps.length() > 0) {
-      m_splitTunnelManager->start(m_inetAdapterIndex, vpnAdapterIndex);
-      m_splitTunnelManager->excludeApps(config.m_vpnDisabledApps);
+  const bool splitEnabled =
+      (config.m_appSplitTunnelType == kAppRouteOnlyForward
+       || config.m_appSplitTunnelType == kAppRouteAllExcept);
+
+  if (splitEnabled && !config.m_vpnDisabledApps.isEmpty()) {
+      if (!m_splitTunnelManager->start(m_inetAdapterIndex, vpnAdapterIndex)) {
+          emit backendFailure(DaemonError::ERROR_SPLIT_TUNNEL_START_FAILURE);
+          return;
+      }
+      uint32_t driverMode = (config.m_appSplitTunnelType == kAppRouteOnlyForward)
+          ? kDriverModeInclude : kDriverModeExclude;
+      if (!m_splitTunnelManager->setSplitTunnelMode(driverMode)) {
+          logger.error() << "Failed to set split tunnel mode, aborting split tunnel";
+          emit backendFailure(DaemonError::ERROR_SPLIT_TUNNEL_START_FAILURE);
+          m_splitTunnelManager->stop();
+          return;
+      }
+      if (!m_splitTunnelManager->excludeApps(config.m_vpnDisabledApps)) {
+          emit backendFailure(DaemonError::ERROR_SPLIT_TUNNEL_EXCLUDE_FAILURE);
+          m_splitTunnelManager->stop();
+      }
   } else {
       m_splitTunnelManager->stop();
   }
@@ -88,13 +114,28 @@ bool WindowsDaemon::run(Op op, const InterfaceConfig& config) {
     m_splitTunnelManager->stop();
     return true;
   }
-  if (config.m_vpnDisabledApps.length() > 0) {
+
+  const bool splitEnabled =
+      (config.m_appSplitTunnelType == kAppRouteOnlyForward
+       || config.m_appSplitTunnelType == kAppRouteAllExcept);
+
+  if (splitEnabled && !config.m_vpnDisabledApps.isEmpty()) {
     if (!m_splitTunnelManager->start(m_inetAdapterIndex)) {
       emit backendFailure(DaemonError::ERROR_SPLIT_TUNNEL_START_FAILURE);
-    };
+      m_splitTunnelManager->stop();
+      return true;
+    }
+    uint32_t driverMode = (config.m_appSplitTunnelType == kAppRouteOnlyForward)
+        ? kDriverModeInclude : kDriverModeExclude;
+    if (!m_splitTunnelManager->setSplitTunnelMode(driverMode)) {
+      logger.error() << "Failed to set split tunnel mode, aborting split tunnel";
+      emit backendFailure(DaemonError::ERROR_SPLIT_TUNNEL_START_FAILURE);
+      m_splitTunnelManager->stop();
+      return true;
+    }
     if (!m_splitTunnelManager->excludeApps(config.m_vpnDisabledApps)) {
       emit backendFailure(DaemonError::ERROR_SPLIT_TUNNEL_EXCLUDE_FAILURE);
-    };
+    }
     // Now the driver should be running (State == 4)
     if (!m_splitTunnelManager->isRunning()) {
       emit backendFailure(DaemonError::ERROR_SPLIT_TUNNEL_START_FAILURE);

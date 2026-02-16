@@ -117,6 +117,12 @@ using ProcessInfo = struct {
 
 #define IOCTL_ST_RESET CTL_CODE(0x8000, 11, METHOD_NEITHER, FILE_ANY_ACCESS)
 
+#define IOCTL_SET_SPLIT_TUNNEL_MODE \
+  CTL_CODE(0x8000, 12, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+#define IOCTL_GET_SPLIT_TUNNEL_MODE \
+  CTL_CODE(0x8000, 13, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
 constexpr static const auto DRIVER_SYMLINK = L"\\\\.\\MULLVADSPLITTUNNEL";
 constexpr static const auto DRIVER_FILENAME = "mullvad-split-tunnel.sys";
 constexpr static const auto DRIVER_SERVICE_NAME = L"AmneziaVPNSplitTunnel";
@@ -299,6 +305,33 @@ bool WindowsSplitTunnel::excludeApps(const QStringList& appPaths) {
     return false;
   }
   logger.debug() << "New Configuration applied: " << stateString();
+  return true;
+}
+
+bool WindowsSplitTunnel::setSplitTunnelMode(uint32_t mode) {
+  if (mode != 0 && mode != 1) {
+    logger.error() << "Invalid split tunnel mode:" << mode;
+    return false;
+  }
+
+  auto state = getState();
+  if (state < STATE_INITIALIZED) {
+    logger.warning() << "Driver is not in the right State to set mode"
+                     << state;
+    return false;
+  }
+
+  logger.debug() << "Setting split tunnel mode to" << mode;
+  DWORD bytesReturned;
+  auto ok = DeviceIoControl(m_driver, IOCTL_SET_SPLIT_TUNNEL_MODE, &mode,
+                            sizeof(mode), nullptr, 0, &bytesReturned, nullptr);
+  if (!ok) {
+    auto err = GetLastError();
+    WindowsUtils::windowsLog("Set Split Tunnel Mode Failed:");
+    logger.error() << "Failed to set split tunnel mode, err code " << err;
+    return false;
+  }
+  logger.debug() << "Split tunnel mode set to" << mode;
   return true;
 }
 
