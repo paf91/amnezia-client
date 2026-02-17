@@ -31,6 +31,7 @@ endif()
 set(QT_BUILD_TOOLS_WHEN_CROSS_COMPILING ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+option(AMNEZIA_BUILD_TESTS "Build AmneziaVPN tests" OFF)
 
 if(APPLE)
     if(IOS)
@@ -48,6 +49,11 @@ if(NOT IOS AND NOT ANDROID AND NOT MACOS_NE)
     add_subdirectory(service)
 
     include(${CMAKE_SOURCE_DIR}/deploy/installer/config.cmake)
+endif()
+
+if(AMNEZIA_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
 endif()
 
 set(AMNEZIA_STAGE_DIR "${CMAKE_BINARY_DIR}/stage")

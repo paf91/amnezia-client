@@ -30,12 +30,16 @@
 #include "platforms/windows/windowsutils.h"
 
 #include "killswitch.h"
+#include "windowsfirewall_sublayer_result_utils.h"
 
 #define IPV6_ADDRESS_SIZE 16
 
-// ID for the Firewall Sublayer
+// ID for the Firewall Sublayer (baseline)
 DEFINE_GUID(ST_FW_WINFW_BASELINE_SUBLAYER_KEY, 0xc78056ff, 0x2bc1, 0x4211, 0xaa,
             0xdd, 0x7f, 0x35, 0x8d, 0xef, 0x20, 0x2d);
+// ID for the DNS Sublayer (used by the split tunnel driver for DNS filters)
+DEFINE_GUID(ST_FW_WINFW_DNS_SUBLAYER_KEY, 0x60090787, 0xcca1, 0x4937, 0xaa,
+            0xce, 0x51, 0x25, 0x6e, 0xf4, 0x81, 0xf3);
 // ID for the Mullvad Split-Tunnel Sublayer Provider
 DEFINE_GUID(ST_FW_PROVIDER_KEY, 0xe2c114ee, 0xf32a, 0x4264, 0xa6, 0xcb, 0x3f,
             0xa7, 0x99, 0x63, 0x56, 0xd9);
@@ -77,6 +81,7 @@ WindowsFirewall* WindowsFirewall::create(QObject* parent) {
   }
   logger.debug() << "Filter engine opened successfully.";
   if (!initSublayer()) {
+    FwpmEngineClose0(engineHandle);
     return nullptr;
   }
   s_instance = new WindowsFirewall(engineHandle, parent);
@@ -90,8 +95,8 @@ WindowsFirewall::WindowsFirewall(HANDLE session, QObject* parent)
 
 WindowsFirewall::~WindowsFirewall() {
   MZ_COUNT_DTOR(WindowsFirewall);
-  if (m_sessionHandle != INVALID_HANDLE_VALUE) {
-    CloseHandle(m_sessionHandle);
+  if (m_sessionHandle != nullptr) {
+    FwpmEngineClose0(m_sessionHandle);
   }
 }
 
@@ -116,17 +121,40 @@ bool WindowsFirewall::initSublayer() {
   }
   auto cleanup = qScopeGuard([&] { FwpmEngineClose0(wfp); });
 
-  // Check if the Layer Already Exists
-  FWPM_SUBLAYER0* maybeLayer;
+  // Check if the baseline sublayer already exists
+  FWPM_SUBLAYER0* maybeLayer = nullptr;
+  bool baselineExists = false;
+  bool dnsExists = false;
+
   result = FwpmSubLayerGetByKey0(wfp, &ST_FW_WINFW_BASELINE_SUBLAYER_KEY,
                                  &maybeLayer);
   if (result == ERROR_SUCCESS) {
-    logger.debug() << "The Sublayer Already Exists!";
+    logger.debug() << "Baseline sublayer already exists";
     FwpmFreeMemory0((void**)&maybeLayer);
+    baselineExists = true;
+  } else if (isSublayerLookupError(result)) {
+    logger.error() << "FwpmSubLayerGetByKey0 (baseline) failed. Return value:.\n"
+                   << result;
+    return false;
+  }
+
+  result = FwpmSubLayerGetByKey0(wfp, &ST_FW_WINFW_DNS_SUBLAYER_KEY,
+                                 &maybeLayer);
+  if (result == ERROR_SUCCESS) {
+    logger.debug() << "DNS sublayer already exists";
+    FwpmFreeMemory0((void**)&maybeLayer);
+    dnsExists = true;
+  } else if (isSublayerLookupError(result)) {
+    logger.error() << "FwpmSubLayerGetByKey0 (DNS) failed. Return value:.\n"
+                   << result;
+    return false;
+  }
+
+  if (baselineExists && dnsExists) {
     return true;
   }
 
-  // Step 1: Start Transaction
+  // Start Transaction
   result = FwpmTransactionBegin(wfp, NULL);
   if (result != ERROR_SUCCESS) {
     logger.error() << "FwpmTransactionBegin0 failed. Return value:.\n"
@@ -134,28 +162,57 @@ bool WindowsFirewall::initSublayer() {
     return false;
   }
 
-  // Step 3: Add Sublayer
-  FWPM_SUBLAYER0 subLayer;
-  memset(&subLayer, 0, sizeof(subLayer));
-  subLayer.subLayerKey = ST_FW_WINFW_BASELINE_SUBLAYER_KEY;
-  subLayer.displayData.name = (PWSTR)L"Amnezia-SplitTunnel-Sublayer";
-  subLayer.displayData.description =
-      (PWSTR)L"Filters that enforce a good baseline";
-  subLayer.weight = 0xFFFF;
+  // Add baseline sublayer (used by killswitch and split tunnel filters)
+  if (!baselineExists) {
+    FWPM_SUBLAYER0 subLayer;
+    memset(&subLayer, 0, sizeof(subLayer));
+    subLayer.subLayerKey = ST_FW_WINFW_BASELINE_SUBLAYER_KEY;
+    subLayer.displayData.name = (PWSTR)L"Amnezia-SplitTunnel-Sublayer";
+    subLayer.displayData.description =
+        (PWSTR)L"Filters that enforce a good baseline";
+    subLayer.weight = 0xFFFF;
 
-  result = FwpmSubLayerAdd0(wfp, &subLayer, NULL);
-  if (result != ERROR_SUCCESS) {
-    logger.error() << "FwpmSubLayerAdd0 failed. Return value:.\n" << result;
-    return false;
+    result = FwpmSubLayerAdd0(wfp, &subLayer, NULL);
+    if (isSublayerAddError(result)) {
+      logger.error() << "FwpmSubLayerAdd0 (baseline) failed. Return value:.\n"
+                     << result;
+      FwpmTransactionAbort0(wfp);
+      return false;
+    } else if (isSublayerAlreadyExists(result)) {
+      logger.debug() << "Baseline sublayer was created concurrently";
+    }
   }
-  // Step 4: Commit!
+
+  // Add DNS sublayer (used by the split tunnel driver for DNS filter
+  // exceptions)
+  if (!dnsExists) {
+    FWPM_SUBLAYER0 dnsSubLayer;
+    memset(&dnsSubLayer, 0, sizeof(dnsSubLayer));
+    dnsSubLayer.subLayerKey = ST_FW_WINFW_DNS_SUBLAYER_KEY;
+    dnsSubLayer.displayData.name = (PWSTR)L"Amnezia-SplitTunnel-DNS-Sublayer";
+    dnsSubLayer.displayData.description =
+        (PWSTR)L"DNS filters for split tunnel exceptions";
+    dnsSubLayer.weight = 0xFFFE;
+
+    result = FwpmSubLayerAdd0(wfp, &dnsSubLayer, NULL);
+    if (isSublayerAddError(result)) {
+      logger.error() << "FwpmSubLayerAdd0 (DNS) failed. Return value:.\n"
+                     << result;
+      FwpmTransactionAbort0(wfp);
+      return false;
+    } else if (isSublayerAlreadyExists(result)) {
+      logger.debug() << "DNS sublayer was created concurrently";
+    }
+  }
+
+  // Commit!
   result = FwpmTransactionCommit0(wfp);
   if (result != ERROR_SUCCESS) {
     logger.error() << "FwpmTransactionCommit0 failed. Return value:.\n"
                    << result;
     return false;
   }
-  logger.debug() << "Initialised Sublayer";
+  logger.debug() << "Initialised sublayers (baseline + DNS)";
   return true;
 }
 
