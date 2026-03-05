@@ -347,6 +347,8 @@ void OpenVpnProtocol::updateVpnGateway(const QString &line)
                 m_vpnGateway = l.split(" ").at(2);
 #ifdef Q_OS_WIN
                 QThread::msleep(300);
+                bool peerTrafficConfigured = false;
+                bool peerTrafficFailed = false;
                 IpcClient::withInterface([&](QSharedPointer<IpcInterfaceReplica> iface) {
                     QList<QNetworkInterface> netInterfaces = QNetworkInterface::allInterfaces();
                     for (int i = 0; i < netInterfaces.size(); i++) {
@@ -355,17 +357,39 @@ void OpenVpnProtocol::updateVpnGateway(const QString &line)
                             // killSwitch toggle
                             if (m_vpnLocalAddress == netInterfaces.at(i).addressEntries().at(j).ip().toString()) {
                                 if (QVariant(m_configData.value(config_key::killSwitchOption).toString()).toBool()) {
-                                    iface->enableKillSwitch(m_configData, netInterfaces.at(i).index());
+                                    auto enableKillSwitch =
+                                        iface->enableKillSwitch(m_configData, netInterfaces.at(i).index());
+                                    if (!enableKillSwitch.waitForFinished(1000) ||
+                                        !enableKillSwitch.returnValue()) {
+                                        qWarning() << "OpenVpnProtocol::updateVpnGateway(): Failed to enable killswitch";
+                                        peerTrafficFailed = true;
+                                        return;
+                                    }
                                 }
                                 m_configData.insert("vpnAdapterIndex", netInterfaces.at(i).index());
                                 m_configData.insert("vpnGateway", m_vpnGateway);
                                 m_configData.insert("vpnServer",
                                                     NetworkUtilities::getIPAddress(m_configData.value(amnezia::config_key::hostName).toString()));
-                                iface->enablePeerTraffic(m_configData);
+                                auto enablePeerTraffic = iface->enablePeerTraffic(m_configData);
+                                if (!enablePeerTraffic.waitForFinished(1000) ||
+                                    !enablePeerTraffic.returnValue()) {
+                                    qWarning() << "OpenVpnProtocol::updateVpnGateway(): Failed to enable peer traffic";
+                                    peerTrafficFailed = true;
+                                    return;
+                                }
+                                peerTrafficConfigured = true;
+                                return;
                             }
                         }
                     }
                 });
+                if (peerTrafficFailed) {
+                    emit protocolError(ErrorCode::InternalError);
+                    return;
+                }
+                if (!peerTrafficConfigured) {
+                    qWarning() << "OpenVpnProtocol::updateVpnGateway(): Failed to find VPN adapter index. Skipping peer traffic setup";
+                }
 #endif
 #if defined(Q_OS_LINUX) || defined(Q_OS_MACOS)
                 // killSwitch toggle

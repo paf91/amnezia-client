@@ -263,11 +263,13 @@ bool KillSwitch::enablePeerTraffic(const QJsonObject &configStr) {
 
     // killSwitch toggle
     if (QVariant(configStr.value(amnezia::config_key::killSwitchOption).toString()).toBool()) {
-        WindowsFirewall::create(this)->enablePeerTraffic(config);
+        if (!WindowsFirewall::create(this)->enablePeerTraffic(config)) {
+            return false;
+        }
     }
 
     WindowsDaemon::instance()->prepareActivation(config, inetAdapterIndex);
-    WindowsDaemon::instance()->activateSplitTunnel(config, vpnAdapterIndex);
+    return WindowsDaemon::instance()->activateSplitTunnel(config, vpnAdapterIndex);
 #endif
     return true;
 }

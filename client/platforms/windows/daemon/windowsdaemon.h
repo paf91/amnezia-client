@@ -24,7 +24,7 @@ class WindowsDaemon final : public Daemon {
   ~WindowsDaemon();
 
   void prepareActivation(const InterfaceConfig& config, int inetAdapterIndex = 0) override;
-  void activateSplitTunnel(const InterfaceConfig& config, int vpnAdapterIndex = 0) override;
+  bool activateSplitTunnel(const InterfaceConfig& config, int vpnAdapterIndex = 0) override;
 
  protected:
   bool run(Op op, const InterfaceConfig& config) override;
@@ -32,6 +32,8 @@ class WindowsDaemon final : public Daemon {
   DnsUtils* dnsutils() override { return m_dnsutils; }
 
  private:
+  bool configureSplitTunnel(const InterfaceConfig& config,
+                            int vpnAdapterIndex = 0);
   void monitorBackendFailure();
 
  private:
